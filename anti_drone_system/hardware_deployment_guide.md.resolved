@@ -1,0 +1,127 @@
+# Hardware Connection & Deployment Manual
+
+This guide describes how to connect your companion computer (Jetson Nano, Raspberry Pi, or Laptop) to the **SpeedyBee F405/F7 flight controller** running ArduPilot, configure the software parameters, and execute the guidance pipeline.
+
+---
+
+## 1. Physical Hardware Connections
+
+To run the pipeline on actual flight hardware, you must establish two interfaces:
+1. **Telemetry Link**: A serial/USB connection between the companion computer and the flight controller.
+2. **Video Link**: The camera feed going into the companion computer for processing.
+
+### Wiring Diagram
+```mermaid
+graph TD
+    subgraph Companion Computer [Companion Computer - Jetson / Pi / Laptop]
+        Cam[USB / CSI Camera]
+        UART_CC[UART Pins / USB Port]
+        Power_CC[5V/12V Power Input]
+    end
+
+    subgraph SpeedyBee FC [SpeedyBee F405 / F7 Flight Controller]
+        UART_FC[UART1 / UART4 RX/TX Pins]
+        USB_FC[USB-C Port]
+        BEC_5V[5V BEC Out]
+    end
+
+    subgraph Power System [Battery & PDB]
+        Battery[LiPo Battery]
+        PDB[Power Distribution Board / BEC]
+    end
+
+    %% Wiring Connections
+    Battery -->|Raw Voltage| PDB
+    PDB -->|Stable 5V/3A| Power_CC
+    PDB -->|VBAT| SpeedyBeeFC[SpeedyBee FC Power Input]
+    
+    Cam -->|Video Feed| CompanionComputer
+    
+    %% Telemetry Options
+    UART_CC <-->|TX to RX / RX to TX / GND| UART_FC
+    UART_CC <-->|Option B: USB-to-USB Cable| USB_FC
+```
+
+### Connection Methods
+* **Option A: USB Connection (Recommended for Bench Tests)**
+  Connect a standard USB-C cable from the companion computer to the SpeedyBee FC's USB port. ArduPilot registers this port as serial interface `0` (USB).
+* **Option B: GPIO UART Wiring (Recommended for Flight)**
+  Wire the hardware serial ports directly:
+  * Companion Computer **TX** $\rightarrow$ SpeedyBee FC **RX** (e.g. T1 or T4)
+  * Companion Computer **RX** $\rightarrow$ SpeedyBee FC **TX** (e.g. R1 or R4)
+  * Companion Computer **GND** $\rightarrow$ SpeedyBee FC **GND**
+
+---
+
+## 2. ArduPilot Parameter Configuration
+
+Before launching the system, connect to the flight controller via **Mission Planner** or **QGroundControl** and configure the telemetry port parameters.
+
+| Parameter | Recommended Value | Explanation |
+| :--- | :--- | :--- |
+| `SERIALx_BAUD` | `921` | Configures the port to `921600` baud rate (required for high frequency commands). |
+| `SERIALx_PROTOCOL`| `2` | Set protocol to **MAVLink 2** (required for advanced telemetry frames). |
+| `SRx_EXTRA1` | `10` | Set Attitude stream rate to `10Hz`. |
+| `SRx_POSITION` | `10` | Set Position stream rate to `10Hz`. |
+| `EK3_SRC1_POSXY` | `3` (GPS) or `0` | Select primary horizontal position source. |
+| `GUID_TIMEOUT` | `2.0` | Safety timeout before returning to hover if companion computer drops telemetry. |
+
+> [!NOTE]
+> Replace the `x` in the parameter names with the index of the serial port you wired to (e.g. `SERIAL1` for UART1, `SERIAL0` for USB connection).
+
+---
+
+## 3. Deployment & Execution Workflow
+
+```mermaid
+flowchart TD
+    A[Power Up Drone & Companion Computer] --> B[Ensure GPS Lock & 3D Fix]
+    B --> C[Verify Camera Feed is Active]
+    C --> D[Open config/settings.yaml]
+    D -->|Set connection_type: 'serial'| E[Set serial_port & baudrate]
+    E --> F[Run main.py in Hardware Mode]
+    F --> G[Arm and Takeoff Drone manually via RC]
+    G --> H[Switch to GUIDED Mode]
+    H -->|Press 't' to Enable| I[Autonomous Vision Pursuit Active]
+```
+
+### Step-by-Step Instructions
+
+#### Step 1: Edit Settings
+Open `configs/settings.yaml` and configure the hardware parameters:
+```yaml
+mavlink:
+  connection_type: "serial"  # Change from 'udp' to 'serial'
+  serial_port: "/dev/ttyACM0" # COMx on Windows, /dev/ttyACM0 or /dev/ttyAMA0 on Linux
+  baudrate: 921600
+  system_id: 255
+  target_system_id: 1
+
+camera:
+  type: "usb"                # 'usb', 'csi', or 'rtsp'
+  source: "0"                # Camera device index or video stream link
+```
+
+#### Step 2: Launch the Pipeline
+Run the main script from the terminal:
+```powershell
+python main.py --mode hardware
+```
+*(Add `--no-gui` if running headlessly on a companion computer without an active display monitor).*
+
+#### Step 3: Operating the Flight Controls
+1. **Arm & Takeoff**: Use your RC transmitter to arm the drone and take off to a safe hover altitude (e.g., 3 meters) in **LOITER** or **ALT_HOLD** mode.
+2. **Engage Companion Computer**: Ensure the target is within view of the camera. The console log will print `Acquired target ID: x` once YOLO locates the target.
+3. **Autonomous Guidances**:
+   * Switch the flight mode to **GUIDED** via your RC transmitter.
+   * Press **`t`** in the OpenCV window (or trigger via terminal control) to enable the autonomous guidance switch. The drone will now begin chasing the target drone using Proportional Navigation.
+4. **Manual Override (Safety Priority)**:
+   * To immediately disable companion control at any point, flick the flight mode switch on your RC transmitter back to **LOITER** or **ALT_HOLD**. 
+   * Alternatively, press **`e`** in the OpenCV window to issue an emergency stop command (stabilized hover).
+
+---
+
+## 4. Safety Flight Protocols
+* **Tethered Flight Tests**: For first-time validation, tether the drone to the ground with a safety cord to verify that control yaw/pitch commands go in the correct directions.
+* **RC Fail-Safe**: Keep one finger on the RC Flight Mode switch (Loiter/Manual) at all times to override the autonomous companion computer controls immediately if needed.
+* **Geofencing**: Enable cylindrical geofencing in ArduPilot parameters to prevent flyaways during pursuit testing.

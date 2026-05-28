@@ -1,0 +1,6 @@
+names:
+  0: drone
+nc: 1
+path: D:/Bytetrack/anti_drone_system/dataset
+train: images/train
+val: images/val
