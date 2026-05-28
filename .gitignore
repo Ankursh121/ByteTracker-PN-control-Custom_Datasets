@@ -1,0 +1,28 @@
+# Dataset Images
+anti_drone_system/dataset/images/
+coco json drone detection/dataset/test/images/
+coco json drone detection/dataset/train/images/
+coco json drone detection/dataset/valid/images/
+coco json drone detection/dataset_merged/test/images/
+coco json drone detection/dataset_merged/train/images/
+coco json drone detection/dataset_merged/valid/images/
+
+# Raw dataset/split images
+coco json drone detection/All drones/
+coco json drone detection/Birds/
+coco json drone detection/ezgif-*/
+coco json drone detection/archive/
+
+# Python cache & virtual environments
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE settings
+.vscode/
+
+# PyTorch/YOLO model checkpoints & runs
+*.pt
+anti_drone_system/runs/
+coco json drone detection/runs/
