@@ -38,9 +38,6 @@ mavlink:
   udp_address: 127.0.0.1
   udp_port: 14550
 
-system:
-  simulation_mode: false
-
 ranging:
   drone_real_size: 0.35
   filter_alpha: 0.25
@@ -72,7 +69,7 @@ yolo:
   # switches class filter to null and applies shape/aspect filters instead.
   #
   confidence_threshold: 0.30
-  device: cuda
+  device: cpu   # change to 'cuda' if your machine has an NVIDIA GPU
   imgsz: 640
 
   # Shape filters — applied to ALL detections regardless of model
