@@ -1,3 +1,4 @@
+import math
 import time
 import threading
 import logging
@@ -83,7 +84,10 @@ class MAVLinkConnectionManager:
     def _connection_loop(self):
         """
         Background loop that attempts to connect and handle reconnections.
+        Logs the connection attempt only once per cycle to avoid log spam.
         """
+        _logged_waiting = False
+
         while self.running:
             if not self.is_connected:
                 connection_string = ""
@@ -93,20 +97,26 @@ class MAVLinkConnectionManager:
                 if self.connection_type == "serial":
                     connection_string = self.serial_port
                     baud = self.baudrate
-                    logger.info(f"Connecting to SpeedyBee UART on {connection_string} at {baud} baud...")
+                    if not _logged_waiting:
+                        logger.info(f"Connecting to SpeedyBee UART on {connection_string} at {baud} baud...")
+                        _logged_waiting = True
                 elif self.connection_type == "udp":
                     connection_string = f"udpin:{self.udp_address}:{self.udp_port}"
-                    logger.info(f"Listening for UDP MAVLink packets on {connection_string}...")
+                    if not _logged_waiting:
+                        logger.info(f"Waiting for UDP MAVLink heartbeat on {connection_string}...")
+                        _logged_waiting = True
                 elif self.connection_type == "tcp":
                     connection_string = f"tcp:{self.tcp_address}:{self.tcp_port}"
-                    logger.info(f"Connecting to TCP MAVLink endpoint at {connection_string}...")
+                    if not _logged_waiting:
+                        logger.info(f"Connecting to TCP MAVLink endpoint at {connection_string}...")
+                        _logged_waiting = True
 
                 try:
                     with self.lock:
                         if self.master:
                             self.master.close()
                             self.master = None
-                        
+
                         if self.connection_type == "serial":
                             self.master = mavutil.mavlink_connection(
                                 connection_string,
@@ -128,13 +138,15 @@ class MAVLinkConnectionManager:
                         self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
                         self.heartbeat_thread.start()
 
-                    # Wait a bit for the first heartbeat
+                    # Wait for first heartbeat
                     time.sleep(self.reconnect_interval)
 
                 except Exception as e:
                     logger.error(f"MAVLink setup failed: {e}. Retrying in {self.reconnect_interval}s...")
                     time.sleep(self.reconnect_interval)
             else:
+                # Connected — reset the log-once flag for next disconnection cycle
+                _logged_waiting = False
                 time.sleep(1.0)
 
     def disconnect(self):
@@ -307,21 +319,21 @@ class MAVLinkConnectionManager:
                 elif self.current_mode == "RTL":
                     dx = -self.local_x
                     dy = -self.local_y
-                    dist = np.sqrt(dx**2 + dy**2)
+                    dist = math.sqrt(dx**2 + dy**2)
                     if dist > 0.5:
                         self.local_x += (dx / dist) * 4.0 * dt
                         self.local_y += (dy / dist) * 4.0 * dt
-                        self.yaw = np.arctan2(dy, dx)
+                        self.yaw = math.atan2(dy, dx)
                     else:
                         self.local_x = 0.0
                         self.local_y = 0.0
                         self.current_mode = "LAND"
                 else:
                     self.yaw += yaw_rate * dt
-                    self.yaw = (self.yaw + np.pi) % (2 * np.pi) - np.pi
+                    self.yaw = (self.yaw + math.pi) % (2 * math.pi) - math.pi
                     
-                    cos_yaw = np.cos(self.yaw)
-                    sin_yaw = np.sin(self.yaw)
+                    cos_yaw = math.cos(self.yaw)
+                    sin_yaw = math.sin(self.yaw)
                     v_north = vx * cos_yaw - vy * sin_yaw
                     v_east  = vx * sin_yaw + vy * cos_yaw
                     v_down  = -vz
@@ -449,6 +461,21 @@ class MAVLinkConnectionManager:
                         elif fix >= 3:
                             self.gps_lock = f"3D_LOCK ({msg.satellites_visible} Sats)"
 
+            except OSError as e:
+                # WinError 10038 = WSAENOTSOCK: operation on a closed/not-yet-opened socket.
+                # OSError errno 9 = EBADF: bad file descriptor (socket closed mid-read).
+                # Both are transient — the connection_loop will rebuild the socket.
+                # Suppress the log flood; just wait and let reconnection happen.
+                _eno = getattr(e, 'winerror', None) or e.errno
+                if _eno in (10038, 9, 10054, 10053):
+                    with self.lock:
+                        self.is_connected = False
+                    time.sleep(self.reconnect_interval)
+                else:
+                    logger.error(f"Error reading MAVLink telemetry channel: {e}")
+                    with self.lock:
+                        self.is_connected = False
+                    time.sleep(0.5)
             except Exception as e:
                 logger.error(f"Error reading MAVLink telemetry channel: {e}")
                 with self.lock:
