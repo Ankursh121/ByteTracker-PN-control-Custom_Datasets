@@ -22,11 +22,11 @@ guidance:
   target_loss_timeout: 3.0
 
 mavlink:
-  connection_type: udp
-  udp_address: 127.0.0.1
-  udp_port: 14550
+  connection_type: serial
+  serial_port: COM3        # ← update to your actual COM port
+  baudrate: 921600
 system:
-  simulation_mode: true
+  simulation_mode: false
 
 ranging:
   drone_real_size: 0.35
