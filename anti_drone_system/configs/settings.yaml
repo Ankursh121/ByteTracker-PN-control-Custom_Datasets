@@ -23,7 +23,7 @@ guidance:
 
 mavlink:
   connection_type: serial
-  serial_port: COM3        # ← update to your actual COM port
+  serial_port: COM9        # ← update to your actual COM port
   baudrate: 921600
 system:
   simulation_mode: false
