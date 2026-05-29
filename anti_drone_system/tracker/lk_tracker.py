@@ -23,9 +23,15 @@ class BoundingBoxTracker:
             self.active = False
             return
             
-        # Create mask for features within target bounding box
+        # Focus features towards the center of the bounding box to avoid background noise/clutter
+        bw = x2 - x1
+        bh = y2 - y1
+        pad_w = int(bw * 0.20) if bw > 15 else 0
+        pad_h = int(bh * 0.20) if bh > 15 else 0
+        
+        # Create mask for features within target bounding box (inner region)
         mask = np.zeros_like(frame_gray)
-        mask[y1:y2, x1:x2] = 255
+        mask[y1+pad_h : y2-pad_h, x1+pad_w : x2-pad_w] = 255
         
         # Detect tracking features inside target box
         pts = cv2.goodFeaturesToTrack(
@@ -43,7 +49,7 @@ class BoundingBoxTracker:
             self.active = True
         else:
             # Fallback: create a grid of points inside the box to track
-            grid_y, grid_x = np.mgrid[y1+2:y2-2:4, x1+2:x2-2:4]
+            grid_y, grid_x = np.mgrid[y1+pad_h+2 : y2-pad_h-2 : 4, x1+pad_w+2 : x2-pad_w-2 : 4]
             pts = np.vstack((grid_x.flatten(), grid_y.flatten())).T.reshape(-1, 1, 2).astype(np.float32)
             if len(pts) > 0:
                 self.box = [x1, y1, x2, y2]
@@ -58,14 +64,14 @@ class BoundingBoxTracker:
             self.active = False
             return False, None
             
-        # Calculate optical flow of tracking points
+        # Calculate optical flow of tracking points (expanded window and level for fast motion)
         next_pts, status, err = cv2.calcOpticalFlowPyrLK(
             self.prev_gray, 
             frame_gray, 
             self.features, 
             None,
-            winSize=(15, 15),
-            maxLevel=2,
+            winSize=(21, 21),
+            maxLevel=3,
             criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03)
         )
         
@@ -74,13 +80,36 @@ class BoundingBoxTracker:
             good_next = next_pts[status == 1]
             
             if len(good_next) >= 3:
-                # Calculate shift using median motion to suppress noise/outliers
                 displacements = good_next - good_prev
-                dx = np.median(displacements[:, 0])
-                dy = np.median(displacements[:, 1])
+                
+                # Exclude static background "anchor" points when target is moving
+                mags = np.linalg.norm(displacements, axis=1)
+                max_mag = np.max(mags)
+                if max_mag > 1.0:
+                    moving_mask = mags > 0.4
+                    if np.sum(moving_mask) >= 3:
+                        good_prev = good_prev[moving_mask]
+                        good_next = good_next[moving_mask]
+                        displacements = displacements[moving_mask]
+                
+                # Filter displacements to use only points closest to the bounding box center,
+                # which helps avoid tracking static background elements.
+                x1, y1, x2, y2 = self.box
+                cx = (x1 + x2) / 2.0
+                cy = (y1 + y2) / 2.0
+                
+                # Distance of each feature point to the box center
+                dists = np.linalg.norm(good_prev - np.array([cx, cy]), axis=1)
+                
+                # Keep the closest features (e.g. 60%) to calculate shift
+                num_to_keep = max(3, int(len(good_prev) * 0.6))
+                closest_indices = np.argsort(dists)[:num_to_keep]
+                
+                relevant_displacements = displacements[closest_indices]
+                dx = np.median(relevant_displacements[:, 0])
+                dy = np.median(relevant_displacements[:, 1])
                 
                 # Shift box coordinates
-                x1, y1, x2, y2 = self.box
                 h, w = frame_gray.shape
                 
                 new_x1 = max(0, min(w - 10, int(x1 + dx)))
@@ -90,22 +119,8 @@ class BoundingBoxTracker:
                 
                 self.box = [new_x1, new_y1, new_x2, new_y2]
                 self.prev_gray = frame_gray.copy()
+                self.features = good_next.reshape(-1, 1, 2)
                 
-                # Re-extract keypoints to prevent tracking decay
-                mask = np.zeros_like(frame_gray)
-                mask[new_y1:new_y2, new_x1:new_x2] = 255
-                pts = cv2.goodFeaturesToTrack(
-                    frame_gray,
-                    maxCorners=25,
-                    qualityLevel=0.03,
-                    minDistance=3,
-                    mask=mask
-                )
-                if pts is not None and len(pts) > 0:
-                    self.features = pts.copy()
-                else:
-                    self.features = good_next.reshape(-1, 1, 2)
-                    
                 return True, self.box
                 
         self.active = False

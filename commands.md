@@ -73,7 +73,8 @@ When running the OpenCV visualizer window, use these keyboard hotkeys to interac
 * **`q`** : Quit system safely (sends zero-velocity hover commands before disconnecting).
 * **`p`** : Pause/resume pipeline processing.
 * **`t`** : **Toggle Autonomous Guidance** (Enable/Disable sending pursuit velocities).
-* **`c`** : Cycle guidance law (**Proportional Navigation** $\Leftrightarrow$ **Direct Pursuit**).
+* **`f`** : **Toggle Follow Mode Safety Switch** (Enable/Disable active target following).
+* **`c`** : Cycle guidance law (**Follow Target** $\Leftrightarrow$ **Proportional Navigation** $\Leftrightarrow$ **Direct Pursuit**).
 * **`d`** : Toggle debug visualization overlay (3D predicted positions, velocity vectors).
 * **`a`** / **`s`** : Send **ARM** / **DISARM** flight commands.
 * **`o`** : Send **TAKEOFF** command (commands climb to a default 3-meter altitude).

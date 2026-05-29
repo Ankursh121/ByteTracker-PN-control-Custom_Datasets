@@ -21,7 +21,7 @@ from detector import YOLODetector
 from tracker import ByteTracker, BoundingBoxTracker
 from ranging import DistanceEstimator
 from prediction import MotionPredictor
-from control import PNGuidanceController, DirectPursuitController
+from control import PNGuidanceController, DirectPursuitController, FollowTargetController
 from mavlink import MAVLinkConnectionManager
 from utils import ThreadedVideoStream, draw_hud, draw_target
 from simulation import SITLSimulator
@@ -73,6 +73,22 @@ def calculate_iou(box1, box2):
     if union_area == 0.0:
         return 0.0
     return inter_area / union_area
+
+def show_frame_fitted(window_name, img):
+    """
+    Displays the image in the specified window, automatically resizing it
+    to match the current window dimensions to eliminate grey borders/margins.
+    """
+    try:
+        rect = cv2.getWindowImageRect(window_name)
+        if rect is not None and rect[2] > 0 and rect[3] > 0:
+            img_disp = cv2.resize(img, (rect[2], rect[3]), interpolation=cv2.INTER_LINEAR)
+        else:
+            img_disp = img
+    except Exception:
+        img_disp = img
+    cv2.imshow(window_name, img_disp)
+
 
 # Configure logging
 logging.basicConfig(
@@ -147,7 +163,8 @@ def main():
     # Initialize Guidance Controllers
     controller_pn = PNGuidanceController(config)
     controller_pursuit = DirectPursuitController(config)
-    active_controller = "PN_GUIDANCE"  # Can toggle to "DIRECT_PURSUIT"
+    controller_follow = FollowTargetController(config)
+    active_controller = "FOLLOW_TARGET"  # Default mode
 
     # Initialize Simulator target if virtual target mode is active
     virtual_target_mode = (mode == "simulation")
@@ -174,6 +191,12 @@ def main():
     running = True
     paused = False
     guidance_active = False  # Safe switch: off by default, toggle with 't'
+    FOLLOW_TARGET_ENABLED = False  # Follow safety switch: off by default, toggle with 'f'
+    lock_state = "ACQUISITION"  # Target lock states: ACQUISITION, LOCKED, LOST, REACQUISITION
+    lost_time = 0.0
+    last_w_box = 50.0
+    last_h_box = 50.0
+    last_known_box = None  # Store last known target box [cx, cy, w, h]
     debug_mode = config['system']['debug_overlay']
     current_target_id = None
     
@@ -192,7 +215,8 @@ def main():
     logger.info("  [q] : Quit Program")
     logger.info("  [p] : Pause Pipeline Execution")
     logger.info("  [t] : Toggle Guidance Switch (ENABLE/DISABLE Autonomous Pursuit)")
-    logger.info("  [c] : Cycle Controller Law (PN Guidance <=> Direct Pursuit)")
+    logger.info("  [f] : Toggle Follow Mode Safety Switch (ENABLE/DISABLE active following)")
+    logger.info("  [c] : Cycle Controller Law (Follow Target <=> PN Guidance <=> Direct Pursuit)")
     logger.info("  [d] : Toggle Debug Overlay (Projected vectors and predictions)")
     logger.info("  [a] : Send ARM Command to Drone")
     logger.info("  [s] : Send DISARM Command to Drone")
@@ -201,6 +225,10 @@ def main():
     logger.info("  [r] : Send Return-To-Launch (RTL) Command")
     logger.info("  [e] : EMERGENCY STOP (Hover immediately & disable auto-guidance)")
     logger.info("------------------------------------------")
+
+    # Initialize OpenCV window once if GUI is enabled
+    if config['system']['gui']:
+        cv2.namedWindow("Anti-Drone Intercept Feed", cv2.WINDOW_NORMAL)
 
     try:
         while running:
@@ -220,7 +248,7 @@ def main():
 
             if paused:
                 if config['system']['gui']:
-                    cv2.imshow("Anti-Drone Intercept Feed", frame)
+                    show_frame_fitted("Anti-Drone Intercept Feed", frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord('q'):
                         running = False
@@ -274,97 +302,210 @@ def main():
             # 3. Update ByteTrack tracker
             active_tracks = tracker.update(detections)
 
-            # 4. Associate Lucas-Kanade optical flow tracker with YOLO/ByteTrack detections
-            best_iou = 0.0
-            best_det = None
-            if lk_tracker.active and lk_updated and len(detections) > 0:
-                lx1, ly1, lx2, ly2 = lk_box
-                w_l = lx2 - lx1
-                h_l = ly2 - ly1
-                cx_l = lx1 + w_l / 2.0
-                cy_l = ly1 + h_l / 2.0
-                
-                for det in detections:
-                    dx1, dy1, dx2, dy2 = det[:4]
-                    w_d = dx2 - dx1
-                    h_d = dy2 - dy1
-                    cx_d = dx1 + w_d / 2.0
-                    cy_d = dy1 + h_d / 2.0
-                    
-                    iou = calculate_iou([cx_d, cy_d, w_d, h_d], [cx_l, cy_l, w_l, h_l])
-                    if iou > 0.20 and iou > best_iou:
-                        best_iou = iou
-                        best_det = det
-
             target_track = None
             from_yolo = False
 
-            # A. Check if ByteTracker currently has the locked target
+            # Get predicted/last known target box coordinates for association matching
+            pred_cx, pred_cy, pred_w, pred_h = None, None, None, None
             if current_target_id is not None:
-                for track in active_tracks:
-                    if track.track_id == current_target_id:
-                        target_track = track
-                        from_yolo = True
-                        break
+                pred_pos_3d = predictor.state[:3]
+                img_h, img_w = frame.shape[:2]
+                pred_px = predictor.project_to_image(pred_pos_3d, img_w, img_h)
+                if pred_px is not None and predictor.covariance[0,0] < 5000:
+                    pred_cx, pred_cy = pred_px
+                    pred_w = (ranging.focal_length * ranging.drone_real_size) / max(0.1, pred_pos_3d[2])
+                    pred_h = pred_w
+                elif last_known_box is not None:
+                    pred_cx, pred_cy, pred_w, pred_h = last_known_box
 
-            # B. If target was lost in ByteTrack but we have a matching YOLO detection, associate/acquire it
-            # Force the new track to inherit the old current_target_id so the ID never changes during movement
-            if current_target_id is not None and target_track is None and best_det is not None:
-                for track in active_tracks:
-                    tx1, ty1, tx2, ty2 = track.tlbr
-                    iou = calculate_iou(track.xywh, [ (best_det[0]+best_det[2])/2.0, (best_det[1]+best_det[3])/2.0, best_det[2]-best_det[0], best_det[3]-best_det[1] ])
-                    if iou > 0.40:  # More tolerant IoU matching for moving targets
-                        track.track_id = current_target_id
-                        target_track = track
-                        from_yolo = True
-                        break
-                
-                if target_track is None:
-                    target_track = MockLKTrack(current_target_id, best_det[:4], score=best_det[4])
-                    from_yolo = True
+            # Find if any active track or YOLO detection matches the target (current_target_id)
+            matched_track = None
+            matched_det = None
+            best_assoc_score = 0.0
 
-            # C. If YOLO missed but LK is active and updated, use pure LK tracking fallback
-            if current_target_id is not None and target_track is None and lk_tracker.active and lk_updated:
+            if current_target_id is not None:
+                # 1. Match with active tracks first
+                for track in active_tracks:
+                    txc, tyc, tw, th = track.xywh
+                    
+                    iou_pred = 0.0
+                    if pred_cx is not None:
+                        iou_pred = calculate_iou([txc, tyc, tw, th], [pred_cx, pred_cy, pred_w, pred_h])
+                    
+                    iou_lk = 0.0
+                    if lk_tracker.active and lk_updated and lk_box is not None:
+                        lx1, ly1, lx2, ly2 = lk_box
+                        lcx = lx1 + (lx2 - lx1)/2.0
+                        lcy = ly1 + (ly2 - ly1)/2.0
+                        lw = lx2 - lx1
+                        lh = ly2 - ly1
+                        iou_lk = calculate_iou([txc, tyc, tw, th], [lcx, lcy, lw, lh])
+                        
+                    dist_score = 0.0
+                    if pred_cx is not None:
+                        dist = np.hypot(txc - pred_cx, tyc - pred_cy)
+                        max_dist = max(300.0, frame.shape[1] * 0.5)
+                        if dist < max_dist:
+                            dist_score = 1.0 - (dist / max_dist)
+                            
+                    # Associate based on highest overlap or proximity
+                    assoc_score = max(iou_pred, iou_lk, dist_score * 0.5)
+                    if assoc_score > 0.20 and assoc_score > best_assoc_score:
+                        best_assoc_score = assoc_score
+                        matched_track = track
+                        matched_det = None
+                        
+                # 2. Match with raw YOLO detections if no active track matched
+                if matched_track is None:
+                    for det in detections:
+                        dx1, dy1, dx2, dy2, conf = det[:5]
+                        dxc = (dx1 + dx2) / 2.0
+                        dyc = (dy1 + dy2) / 2.0
+                        dw = dx2 - dx1
+                        dh = dy2 - dy1
+                        
+                        iou_pred = 0.0
+                        if pred_cx is not None:
+                            iou_pred = calculate_iou([dxc, dyc, dw, dh], [pred_cx, pred_cy, pred_w, pred_h])
+                            
+                        iou_lk = 0.0
+                        if lk_tracker.active and lk_updated and lk_box is not None:
+                            lx1, ly1, lx2, ly2 = lk_box
+                            lcx = lx1 + (lx2 - lx1)/2.0
+                            lcy = ly1 + (ly2 - ly1)/2.0
+                            lw = lx2 - lx1
+                            lh = ly2 - ly1
+                            iou_lk = calculate_iou([dxc, dyc, dw, dh], [lcx, lcy, lw, lh])
+                            
+                        dist_score = 0.0
+                        if pred_cx is not None:
+                            dist = np.hypot(dxc - pred_cx, dyc - pred_cy)
+                            max_dist = max(300.0, frame.shape[1] * 0.5)
+                            if dist < max_dist:
+                                dist_score = 1.0 - (dist / max_dist)
+                                
+                        assoc_score = max(iou_pred, iou_lk, dist_score * 0.5)
+                        if assoc_score > 0.20 and assoc_score > best_assoc_score:
+                            best_assoc_score = assoc_score
+                            matched_det = det
+                            matched_track = None
+
+            # Fallback: if no strong match but there is only one active track or YOLO detection in the frame,
+            # and we are currently tracking a lost target, associate it to maintain lock continuity.
+            if current_target_id is not None and matched_track is None and matched_det is None:
+                if len(active_tracks) == 1:
+                    matched_track = active_tracks[0]
+                    logger.info(f"Lock continuity: matching single active track to target ID {current_target_id}")
+                elif len(detections) == 1:
+                    matched_det = detections[0]
+                    logger.info(f"Lock continuity: matching single YOLO detection to target ID {current_target_id}")
+
+            # Apply association results
+            if matched_track is not None:
+                matched_track.track_id = current_target_id
+                target_track = matched_track
+                from_yolo = True
+            elif matched_det is not None:
+                target_track = MockLKTrack(current_target_id, matched_det[:4], score=matched_det[4])
+                from_yolo = True
+            elif current_target_id is not None and lk_tracker.active and lk_updated and lk_box is not None:
+                # Fallback to optical flow tracking if YOLO missed
                 missing_yolo_frames += 1
                 lk_max_frames = config['tracker'].get('lk_max_fallback_frames', 15)
                 if missing_yolo_frames <= lk_max_frames:
-                    lk_tracker.last_conf *= 0.95 # Decay confidence
+                    lk_tracker.last_conf *= 0.95
                     target_track = MockLKTrack(current_target_id, lk_box, score=lk_tracker.last_conf)
                     from_yolo = False
                 else:
-                    logger.info(f"Target ID {current_target_id} lost (missing YOLO confirmation).")
+                    logger.info(f"Target ID {current_target_id} lost (missing YOLO confirmation timeout).")
                     lk_tracker.active = False
-                    current_target_id = None
-            elif current_target_id is not None and target_track is None:
-                # Neither YOLO nor LK could track the drone
-                logger.info(f"Target ID {current_target_id} lost.")
-                current_target_id = None
-                lk_tracker.active = False
+                    target_track = None
+            else:
+                if current_target_id is not None:
+                    lk_tracker.active = False
 
-            # D. If target_track is found, initialize/refresh LK tracker to lock coordinates
+            # State Machine Transitions based on target tracking status
             if target_track is not None:
+                if lock_state == "ACQUISITION":
+                    lock_state = "LOCKED"
+                    logger.info(f"Acquired target ID: {current_target_id}")
+                elif lock_state == "LOST":
+                    lock_state = "REACQUISITION"
+                    logger.info(f"Target ID {current_target_id} reacquired!")
+                elif lock_state == "REACQUISITION":
+                    lock_state = "LOCKED"
+                
+                # Re-initialize LK tracker features from YOLO detection to prevent optical flow drift
                 if from_yolo:
                     x1, y1, x2, y2 = target_track.tlbr
                     lk_tracker.init_tracker(frame_gray, [x1, y1, x2, y2])
                     lk_tracker.last_conf = target_track.score
                     missing_yolo_frames = 0
             else:
-                # E. Target acquisition (if we don't have any locked target)
-                if len(active_tracks) > 0:
-                    active_tracks.sort(key=lambda x: x.score, reverse=True)
-                    best_cand = active_tracks[0]
-                    # Acquire target immediately on high score to eliminate delay
-                    if best_cand.score >= config['tracker']['track_threshold']:
-                        target_track = best_cand
-                        current_target_id = target_track.track_id
-                        x1, y1, x2, y2 = target_track.tlbr
-                        lk_tracker.init_tracker(frame_gray, [x1, y1, x2, y2])
-                        lk_tracker.last_conf = target_track.score
-                        missing_yolo_frames = 0
+                if current_target_id is not None:
+                    if lock_state in ["LOCKED", "REACQUISITION"]:
+                        lock_state = "LOST"
+                        lost_time = time.time()
+                        logger.info(f"Target ID {current_target_id} direct tracking lost. Entering prediction search.")
+                    
+                    # Manage timeouts in LOST state
+                    elapsed_lost = time.time() - lost_time
+                    reacq_timeout = config['guidance'].get('reacquisition_timeout', 5.0)
+                    loss_timeout = config['guidance'].get('target_loss_timeout', 3.0)
+                    
+                    if elapsed_lost > reacq_timeout:
+                        logger.info(f"Target ID {current_target_id} completely lost after timeout.")
+                        lock_state = "ACQUISITION"
+                        current_target_id = None
+                        last_known_box = None
                         predictor.reset()
                         controller_pn.reset()
                         controller_pursuit.reset()
-                        logger.info(f"Acquired target ID: {current_target_id}")
+                        controller_follow.reset()
+                        
+                        if config['guidance'].get('rtl_after_timeout', False) and mavlink_mgr.is_connected:
+                            logger.warning("Failsafe: Switching vehicle to RTL due to target loss.")
+                            mavlink_mgr.set_mode("RTL")
+                    elif elapsed_lost > loss_timeout:
+                        if guidance_active and mavlink_mgr.is_connected and mavlink_mgr.is_armed:
+                            mavlink_mgr.send_velocity_command(0.0, 0.0, 0.0, 0.0)
+                    else:
+                        # Extrapolate position using dead reckoning (Kalman state transition)
+                        predictor.state = np.dot(predictor.F, predictor.state)
+                        predictor.covariance = np.dot(predictor.F, np.dot(predictor.covariance, predictor.F.T)) + predictor.Q
+                        
+                        smoothed_pos = predictor.state[:3]
+                        smoothed_vel = predictor.state[3:]
+                        
+                        img_h, img_w = frame.shape[:2]
+                        pred_px = predictor.project_to_image(smoothed_pos, img_w, img_h)
+                        if pred_px is not None:
+                            cx_p, cy_p = pred_px
+                            box_sz = (ranging.focal_length * ranging.drone_real_size) / max(0.1, smoothed_pos[2])
+                            x1_p = cx_p - box_sz / 2.0
+                            y1_p = cy_p - box_sz / 2.0
+                            x2_p = cx_p + box_sz / 2.0
+                            y2_p = cy_p + box_sz / 2.0
+                            
+                            target_track = MockLKTrack(current_target_id, [x1_p, y1_p, x2_p, y2_p], score=0.4)
+                            distance = smoothed_pos[2]
+                else:
+                    if len(active_tracks) > 0:
+                        active_tracks.sort(key=lambda x: x.score, reverse=True)
+                        best_cand = active_tracks[0]
+                        if best_cand.score >= config['tracker']['track_threshold']:
+                            target_track = best_cand
+                            current_target_id = target_track.track_id
+                            lock_state = "LOCKED"
+                            x1, y1, x2, y2 = target_track.tlbr
+                            lk_tracker.init_tracker(frame_gray, [x1, y1, x2, y2])
+                            lk_tracker.last_conf = target_track.score
+                            missing_yolo_frames = 0
+                            predictor.reset()
+                            controller_pn.reset()
+                            controller_pursuit.reset()
+                            controller_follow.reset()
+                            logger.info(f"Acquired target ID: {current_target_id}")
 
             # Initialize command variables
             cmd = None
@@ -373,15 +514,18 @@ def main():
             # 5. If target is locked, run Ranging, Prediction, and Guidance
             if target_track is not None:
                 cx, cy, w_box, h_box = target_track.xywh
+                last_w_box, last_h_box = w_box, h_box
+                last_known_box = [cx, cy, w_box, h_box]
                 
-                # Ranging
-                distance = ranging.estimate(target_track.track_id, w_box, h_box)
-                
-                # Update 3D Motion Predictor
                 img_h, img_w = frame.shape[:2]
-                smoothed_pos, smoothed_vel = predictor.update(
-                    target_track.track_id, cx, cy, distance, img_w, img_h
-                )
+                if lock_state in ["LOCKED", "REACQUISITION"]:
+                    distance = ranging.estimate(target_track.track_id, w_box, h_box)
+                    smoothed_pos, smoothed_vel = predictor.update(
+                        target_track.track_id, cx, cy, distance, img_w, img_h
+                    )
+                else:
+                    # Predicted state is already updated in Kalman predict step above
+                    pass
                 
                 # Future location prediction (5 steps ahead to compensate camera-to-flight latency)
                 pred_pos_3d = predictor.predict_future(steps=5)
@@ -393,20 +537,33 @@ def main():
                     cmd = controller_pn.compute_commands(
                         target_track, distance, smoothed_pos, smoothed_vel, img_w, img_h, dt
                     )
+                elif active_controller == "FOLLOW_TARGET":
+                    cmd = controller_follow.compute_commands(
+                        target_track, distance, smoothed_pos, smoothed_vel, img_w, img_h, dt
+                    )
                 else:
                     # Direct Pursuit (rule-based target following)
                     cmd = controller_pursuit.compute_commands(
                         target_track, distance, img_w, img_h
                     )
                 
-                # Send commands via MAVLink (if guidance switch and arming states are valid)
-                if guidance_active and mavlink_mgr.is_connected and mavlink_mgr.is_armed:
+                # Send commands via MAVLink (if guidance switch, follow switch, and arming states are valid)
+                if FOLLOW_TARGET_ENABLED and guidance_active and mavlink_mgr.is_connected and mavlink_mgr.is_armed:
                     mavlink_mgr.send_velocity_command(
                         cmd['vx'], cmd['vy'], cmd['vz'], cmd['yaw_rate']
                     )
+                elif guidance_active and mavlink_mgr.is_connected and mavlink_mgr.is_armed:
+                    # Safety Switch Off (Observation Mode) -> Hover
+                    mavlink_mgr.send_velocity_command(0.0, 0.0, 0.0, 0.0)
                 
                 # Render target overlay
                 draw_target(frame, target_track, distance, predicted_px if debug_mode else None)
+                
+                # Draw prediction label if target is lost
+                if lock_state == "LOST":
+                    x1, y1, _, _ = map(int, target_track.tlbr)
+                    cv2.putText(frame, "DEAD RECKONING ACTIVE", (x1, y1 - 42),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
             else:
                 # 7. Safety Target-Loss Failsafe:
                 # If target is lost and guidance is active, command hover (stop velocity)
@@ -450,8 +607,12 @@ def main():
                 current_fps, 
                 mavlink_mgr, 
                 active_controller, 
-                cmd if debug_mode else None, 
-                warnings_list
+                cmd, 
+                warnings_list,
+                target_id=current_target_id,
+                lock_status=lock_state,
+                follow_target_enabled=FOLLOW_TARGET_ENABLED,
+                desired_distance=config['guidance'].get('desired_follow_distance', 5.0)
             )
 
             # Record frame if requested
@@ -464,7 +625,7 @@ def main():
 
             # Show GUI Window
             if config['system']['gui']:
-                cv2.imshow("Anti-Drone Intercept Feed", frame)
+                show_frame_fitted("Anti-Drone Intercept Feed", frame)
                 
                 # Parse Key Binds
                 key = cv2.waitKey(1) & 0xFF
@@ -477,9 +638,17 @@ def main():
                 elif key == ord('t'):
                     guidance_active = not guidance_active
                     logger.info(f"Autonomous Guidance Switch: {'ENABLED' if guidance_active else 'DISABLED'}")
+                elif key == ord('f'):
+                    FOLLOW_TARGET_ENABLED = not FOLLOW_TARGET_ENABLED
+                    logger.info(f"Follow Target Safety Switch: {'ENABLED (ACTIVE)' if FOLLOW_TARGET_ENABLED else 'DISABLED (OBSERVATION)'}")
                 elif key == ord('c'):
-                    # Cycle Controller
-                    active_controller = "DIRECT_PURSUIT" if active_controller == "PN_GUIDANCE" else "PN_GUIDANCE"
+                    # Cycle Controller between FOLLOW_TARGET, PN_GUIDANCE, DIRECT_PURSUIT
+                    if active_controller == "FOLLOW_TARGET":
+                        active_controller = "PN_GUIDANCE"
+                    elif active_controller == "PN_GUIDANCE":
+                        active_controller = "DIRECT_PURSUIT"
+                    else:
+                        active_controller = "FOLLOW_TARGET"
                     logger.info(f"Switched controller law to: {active_controller}")
                 elif key == ord('d'):
                     debug_mode = not debug_mode

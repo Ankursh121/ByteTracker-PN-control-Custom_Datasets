@@ -2,15 +2,15 @@
 
 yolo:
   model_path: "models/best.pt"
-  confidence_threshold: 0.55
+  confidence_threshold: 0.60
   nms_threshold: 0.45
   imgsz: 640
   device: "cuda"  # "cuda" or "cpu"
   target_class_ids: [0]  # Standard class for custom drone datasets is usually 0
   max_detections: 1  # 1 for single target lock mode, higher to track multiple
-  max_box_ratio: 0.50  # Max bounding box area as a ratio of total frame area (e.g. 0.50 for 50%)
-  max_box_width_ratio: 0.80  # Max bounding box width as a ratio of frame width
-  max_box_height_ratio: 0.80 # Max bounding box height as a ratio of frame height
+  max_box_ratio: 0.20  # Max bounding box area as a ratio of total frame area (e.g. 0.20 for 20%)
+  max_box_width_ratio: 0.45  # Max bounding box width as a ratio of frame width
+  max_box_height_ratio: 0.45 # Max bounding box height as a ratio of frame height
   train_settings:
     epochs: 50
     batch_size: 16
@@ -40,6 +40,12 @@ guidance:
   deadzone_x: 25.0       # Deadzone in pixels around center X to prevent hunting/oscillations
   deadzone_y: 20.0       # Deadzone in pixels around center Y to prevent hunting/oscillations
   los_rate_smoothing: 0.3  # EMA filter alpha for smoothing the Line-Of-Sight rate
+  desired_follow_distance: 5.0 # Desired chase/standoff distance in meters
+  max_forward_speed: 5.0       # Max forward speed for follow mode (m/s)
+  max_climb_rate: 3.0          # Max climb rate for follow mode (m/s)
+  target_loss_timeout: 3.0     # Timeout in seconds to continue prediction and search when target is lost
+  reacquisition_timeout: 5.0  # Timeout in seconds before giving up target search completely
+  rtl_after_timeout: false     # Switch flight controller mode to RTL if target is lost for too long
 
 # SpeedyBee FC and MAVLink settings
 mavlink:
