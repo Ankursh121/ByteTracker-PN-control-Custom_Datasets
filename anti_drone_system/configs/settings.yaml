@@ -22,21 +22,11 @@ guidance:
   target_loss_timeout: 3.0
 
 mavlink:
-  baudrate: 921600
-  command_rate_hz: 10.0
   connection_type: udp
-  enable_msg_logging: false
-  heartbeat_rate: 1.0
-  reconnect_interval: 3.0
-  safety_timeout: 2.0
-  serial_port: COM3
-  system_id: 255
-  target_component_id: 1
-  target_system_id: 1
-  tcp_address: 127.0.0.1
-  tcp_port: 5762
   udp_address: 127.0.0.1
   udp_port: 14550
+system:
+  simulation_mode: true
 
 ranging:
   drone_real_size: 0.35
