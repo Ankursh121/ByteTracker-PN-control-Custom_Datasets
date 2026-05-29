@@ -175,7 +175,7 @@ class PipelineManager:
         
         # Parse and establish system mode
         mode = config['system'].get('mode', 'simulation').lower()
-        simulation_mode = (mode in ["simulation", "webcam"])
+        simulation_mode = (mode == "simulation")
         config['system']['simulation_mode'] = simulation_mode
 
         # Initialize MAVLink Connection
@@ -922,7 +922,7 @@ def _pipeline_loop_patch(self):
     config['system']['gui'] = False
     
     mode = config['system'].get('mode', 'simulation').lower()
-    simulation_mode = (mode in ["simulation", "webcam"])
+    simulation_mode = (mode == "simulation")
     config['system']['simulation_mode'] = simulation_mode
 
     # Initialize MAVLink Connection and bind to self
