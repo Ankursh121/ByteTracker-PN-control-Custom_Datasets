@@ -136,12 +136,12 @@ class PipelineManager:
         self.current_cmd = {"vx": 0.0, "vy": 0.0, "vz": 0.0, "yaw_rate": 0.0}
 
     def load_config(self):
-        with open(self.config_path, 'r') as f:
+        with open(self.config_path, 'r', encoding='utf-8') as f:
             self.config = yaml.safe_load(f)
         return self.config
 
     def save_config(self, new_config: dict):
-        with open(self.config_path, 'w') as f:
+        with open(self.config_path, 'w', encoding='utf-8') as f:
             yaml.safe_dump(new_config, f, default_flow_style=False)
         self.config = new_config
 
