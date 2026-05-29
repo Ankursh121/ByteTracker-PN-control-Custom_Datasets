@@ -25,6 +25,19 @@ mavlink:
   connection_type: serial
   serial_port: COM9        # ← update to your actual COM port
   baudrate: 921600
+  command_rate_hz: 10.0
+  enable_msg_logging: false
+  heartbeat_rate: 1.0
+  reconnect_interval: 3.0
+  safety_timeout: 2.0
+  system_id: 255
+  target_component_id: 1
+  target_system_id: 1
+  tcp_address: 127.0.0.1
+  tcp_port: 5762
+  udp_address: 127.0.0.1
+  udp_port: 14550
+
 system:
   simulation_mode: false
 

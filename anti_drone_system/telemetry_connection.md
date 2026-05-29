@@ -73,19 +73,16 @@ system:
 - Look for **USB Serial Device** or **SpeedyBee** → note the port (e.g. `COM3`, `COM6`)
 - Update `serial_port` in `settings.yaml`
 
-#### 2. Configure SpeedyBee in Betaflight
-- Open **Betaflight Configurator** → connect to your FC
-- Go to **Ports** tab:
-
-  | UART   | Function              | Baud Rate |
-  |--------|-----------------------|-----------|
-  | UART1  | MSP (USB passthrough) | AUTO      |
-  | UART2  | MAVLink (TX+RX)       | 921600    |
-
-- Click **Save and Reboot**
+#### 2. Configure SpeedyBee in Mission Planner (ArduPilot)
+- Open **Mission Planner** → connect to your FC via USB
+- Go to **Config** → **Full Parameter List**
+- Find the UART port you are using (e.g. `SERIAL2` for UART2):
+  - Set `SERIAL2_PROTOCOL` = `2` (MAVLink 2)
+  - Set `SERIAL2_BAUD` = `921` (for 921600 baud)
+- Click **Write Params** and **Reboot** the flight controller
 
 #### 3. Set Flight Mode to GUIDED
-- In Betaflight or Mission Planner, ensure the flight mode is set to **GUIDED** for autonomous control
+- In Mission Planner, ensure the flight mode is set to **GUIDED** for autonomous control
 - Alternatively the backend will request GUIDED mode automatically on connection
 
 #### 4. Start the Backend
@@ -159,12 +156,11 @@ ls /dev/ttyAMA0     # hardware UART
 ls /dev/ttyUSB0     # USB-serial adapter
 ```
 
-#### 5. Configure SpeedyBee UART
-In Betaflight Configurator → Ports:
-
-| UART   | Function | Baud Rate |
-|--------|----------|-----------|
-| UART2  | MAVLink  | 921600    |
+#### 5. Configure SpeedyBee UART in ArduPilot
+In **Mission Planner** → **Config** → **Full Parameter List**:
+- Set `SERIALx_PROTOCOL` = `2` (MAVLink 2, where x is your UART number)
+- Set `SERIALx_BAUD` = `921` (921600)
+- Click **Write Params** and **Reboot**
 
 #### 6. Start the Backend
 ```bash
@@ -207,11 +203,11 @@ The backend will reload the config and attempt the new connection automatically.
 | Problem | Likely Cause | Fix |
 |---|---|---|
 | `FC Link: Disconnected` | Wrong COM port | Check Device Manager, update `serial_port` |
-| `FC Link: Disconnected` | Wrong baud rate | Match `baudrate` to Betaflight UART setting |
+| `FC Link: Disconnected` | Wrong baud rate | Match `baudrate` to ArduPilot `SERIALx_BAUD` setting |
 | `FC Link: Disconnected` (UDP) | SITL not running | Start Mission Planner SITL first |
-| `LINK OK` but no telemetry values | MAVLink stream rates not set | Connect via GCS and request streams |
+| `LINK OK` but no telemetry values | MAVLink stream rates not set | Connect via Mission Planner and request streams (SRx_ params) |
 | `Permission denied /dev/ttyAMA0` | Missing dialout group | `sudo usermod -aG dialout $USER` |
-| Serial port in use | Betaflight still open | Close Betaflight Configurator |
+| Serial port in use | Mission Planner still connected | Click Disconnect in Mission Planner |
 | `WinError 10038` (UDP) | Socket closed/no SITL | Start SITL before the backend |
 
 ---
