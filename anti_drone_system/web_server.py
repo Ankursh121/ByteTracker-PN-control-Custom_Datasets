@@ -650,11 +650,11 @@ def set_pipeline_mode(req: SetModeRequest):
     elif req.mode == "webcam":
         config['camera']['source'] = "0"  # Local system webcam (usually index 0)
     elif req.mode == "hardware":
-        # First hardware video interface on Linux (RTSP URL or /dev/video can be configured here)
+        # First hardware video interface on Linux, or external USB camera index 1 on Windows
         if os.name == 'posix':
             config['camera']['source'] = "/dev/video0"
         else:
-            config['camera']['source'] = "0"
+            config['camera']['source'] = "1"  # Uses the external USB camera instead of built-in
             
     pipeline_manager.save_config(config)
     
