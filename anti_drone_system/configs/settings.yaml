@@ -24,7 +24,7 @@ guidance:
 mavlink:
   connection_type: serial
   serial_port: COM9        # ← update to your actual COM port
-  baudrate: 921600
+  baudrate: 115200
   command_rate_hz: 10.0
   enable_msg_logging: false
   heartbeat_rate: 1.0
