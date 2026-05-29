@@ -74,6 +74,41 @@ def calculate_iou(box1, box2):
         return 0.0
     return inter_area / union_area
 
+def compute_template_similarity(candidate_crop, template):
+    """
+    Computes visual similarity between candidate crop and target template using Normalized Cross-Correlation.
+    """
+    try:
+        # Resize both to 64x64
+        cand_resized = cv2.resize(candidate_crop, (64, 64))
+        temp_resized = cv2.resize(template, (64, 64))
+        
+        # Grayscale conversion
+        cand_gray = cv2.cvtColor(cand_resized, cv2.COLOR_BGR2GRAY)
+        temp_gray = cv2.cvtColor(temp_resized, cv2.COLOR_BGR2GRAY)
+        
+        # Compute TM_CCOEFF_NORMED template matching
+        res = cv2.matchTemplate(cand_gray, temp_gray, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, _ = cv2.minMaxLoc(res)
+        
+        # Color Histogram Correlation comparison
+        cand_hsv = cv2.cvtColor(cand_resized, cv2.COLOR_BGR2HSV)
+        temp_hsv = cv2.cvtColor(temp_resized, cv2.COLOR_BGR2HSV)
+        
+        hist_cand = cv2.calcHist([cand_hsv], [0, 1], None, [8, 8], [0, 180, 0, 256])
+        hist_temp = cv2.calcHist([temp_hsv], [0, 1], None, [8, 8], [0, 180, 0, 256])
+        
+        cv2.normalize(hist_cand, hist_cand, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+        cv2.normalize(hist_temp, hist_temp, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+        
+        hist_score = cv2.compareHist(hist_cand, hist_temp, cv2.HISTCMP_CORREL)
+        
+        # Combine both scores: 70% structural similarity (NCC) + 30% color histogram similarity
+        combined_score = 0.7 * max_val + 0.3 * hist_score
+        return combined_score
+    except Exception:
+        return 0.0
+
 def show_frame_fitted(window_name, img):
     """
     Displays the image in the specified window, automatically resizing it
@@ -192,6 +227,8 @@ def main():
     paused = False
     guidance_active = False  # Safe switch: off by default, toggle with 't'
     FOLLOW_TARGET_ENABLED = False  # Follow safety switch: off by default, toggle with 'f'
+    target_templates = []  # List of cropped images of the drone for visual ReID
+    last_template_saved_time = 0.0
     lock_state = "ACQUISITION"  # Target lock states: ACQUISITION, LOCKED, LOST, REACQUISITION
     lost_time = 0.0
     last_w_box = 50.0
@@ -292,8 +329,8 @@ def main():
                     detections = [sim_detection]
             else:
                 # Hardware mode: Run YOLO Detection
-                # Lower threshold if target is already locked to allow recovery hysteresis (min 0.40 to prevent noise locks)
-                active_conf = max(0.40, config['yolo']['confidence_threshold'] - 0.10) if lk_tracker.active else config['yolo']['confidence_threshold']
+                # Lower threshold if target is already locked to allow recovery hysteresis (min 0.20 to prevent noise locks)
+                active_conf = max(0.20, config['yolo']['confidence_threshold'] - 0.10) if lk_tracker.active else config['yolo']['confidence_threshold']
                 detections = detector.detect(frame, conf_threshold=active_conf)
                 if len(detections) > 0:
                     formatted_dets = [f"Box: {[int(coord) for coord in det[:4]]}, Conf: {det[4]:.2f}" for det in detections]
@@ -390,6 +427,58 @@ def main():
                             matched_det = det
                             matched_track = None
 
+            # Visual Template Re-Identification (ReID) Match
+            reid_matched_track = None
+            reid_matched_det = None
+            best_sim_score = 0.0
+            
+            if len(target_templates) > 0:
+                # Compare active tracks to templates
+                for track in active_tracks:
+                    x1, y1, x2, y2 = map(int, track.tlbr)
+                    x1 = max(0, x1)
+                    y1 = max(0, y1)
+                    x2 = min(frame.shape[1], x2)
+                    y2 = min(frame.shape[0], y2)
+                    if (x2 - x1) > 10 and (y2 - y1) > 10:
+                        crop = frame[y1:y2, x1:x2]
+                        for temp in target_templates:
+                            sim = compute_template_similarity(crop, temp)
+                            if sim > best_sim_score:
+                                best_sim_score = sim
+                                reid_matched_track = track
+                                reid_matched_det = None
+                                
+                # Compare raw detections to templates
+                for det in detections:
+                    x1, y1, x2, y2 = map(int, det[:4])
+                    x1 = max(0, x1)
+                    y1 = max(0, y1)
+                    x2 = min(frame.shape[1], x2)
+                    y2 = min(frame.shape[0], y2)
+                    if (x2 - x1) > 10 and (y2 - y1) > 10:
+                        crop = frame[y1:y2, x1:x2]
+                        for temp in target_templates:
+                            sim = compute_template_similarity(crop, temp)
+                            if sim > best_sim_score:
+                                best_sim_score = sim
+                                reid_matched_track = None
+                                reid_matched_det = det
+            
+            # If we have a very strong visual template match, override standard distance matches
+            if best_sim_score >= 0.70:
+                if reid_matched_track is not None:
+                    if current_target_id is None:
+                        current_target_id = reid_matched_track.track_id
+                    reid_matched_track.track_id = current_target_id
+                    matched_track = reid_matched_track
+                    logger.info(f"Visual ReID: Matched target ID {current_target_id} with score {best_sim_score:.2f}")
+                elif reid_matched_det is not None:
+                    if current_target_id is None:
+                        current_target_id = 99 # Default custom ReID ID for raw detection
+                    matched_det = reid_matched_det
+                    logger.info(f"Visual ReID: Matched raw YOLO detection as target ID {current_target_id} with score {best_sim_score:.2f}")
+
             # Fallback: if no strong match but there is only one active track or YOLO detection in the frame,
             # and we are currently tracking a lost target, associate it to maintain lock continuity.
             if current_target_id is not None and matched_track is None and matched_det is None:
@@ -423,6 +512,28 @@ def main():
             else:
                 if current_target_id is not None:
                     lk_tracker.active = False
+
+            # Aggressive Reacquisition: If target is LOST and we couldn't associate it with the old ID,
+            # but there is a fresh high-confidence track/detection in the frame, re-lock onto it immediately
+            # under the original target ID instead of waiting for the 5-second timeout.
+            if target_track is None and current_target_id is not None and lock_state == "LOST":
+                best_cand = None
+                if len(active_tracks) > 0:
+                    active_tracks.sort(key=lambda x: x.score, reverse=True)
+                    if active_tracks[0].score >= config['tracker']['track_threshold']:
+                        best_cand = active_tracks[0]
+                        best_cand.track_id = current_target_id
+                        target_track = best_cand
+                        from_yolo = True
+                        logger.info(f"Aggressive reacquisition of target ID {current_target_id} from active track.")
+                
+                if best_cand is None and len(detections) > 0:
+                    detections_sort = sorted(detections, key=lambda x: x[4], reverse=True)
+                    if detections_sort[0][4] >= config['tracker']['track_threshold']:
+                        best_det = detections_sort[0]
+                        target_track = MockLKTrack(current_target_id, best_det[:4], score=best_det[4])
+                        from_yolo = True
+                        logger.info(f"Aggressive reacquisition of target ID {current_target_id} from raw YOLO detection.")
 
             # State Machine Transitions based on target tracking status
             if target_track is not None:
@@ -516,6 +627,23 @@ def main():
                 cx, cy, w_box, h_box = target_track.xywh
                 last_w_box, last_h_box = w_box, h_box
                 last_known_box = [cx, cy, w_box, h_box]
+                
+                # Save visual templates if target is locked and follow mode is active
+                if FOLLOW_TARGET_ENABLED and lock_state in ["LOCKED", "REACQUISITION"] and from_yolo:
+                    x1_t, y1_t, x2_t, y2_t = map(int, target_track.tlbr)
+                    x1_t = max(0, x1_t)
+                    y1_t = max(0, y1_t)
+                    x2_t = min(frame.shape[1], x2_t)
+                    y2_t = min(frame.shape[0], y2_t)
+                    
+                    if (x2_t - x1_t) > 10 and (y2_t - y1_t) > 10:
+                        # Throttled template saving to capture different angles and scale variations
+                        if len(target_templates) < 10:
+                            if (time.time() - last_template_saved_time) > 0.5:
+                                crop_img = frame[y1_t:y2_t, x1_t:x2_t].copy()
+                                target_templates.append(crop_img)
+                                last_template_saved_time = time.time()
+                                logger.info(f"Target visual template saved to memory. Size: {len(target_templates)}")
                 
                 img_h, img_w = frame.shape[:2]
                 if lock_state in ["LOCKED", "REACQUISITION"]:
@@ -641,6 +769,9 @@ def main():
                 elif key == ord('f'):
                     FOLLOW_TARGET_ENABLED = not FOLLOW_TARGET_ENABLED
                     logger.info(f"Follow Target Safety Switch: {'ENABLED (ACTIVE)' if FOLLOW_TARGET_ENABLED else 'DISABLED (OBSERVATION)'}")
+                    if not FOLLOW_TARGET_ENABLED:
+                        target_templates.clear()
+                        logger.info("Cleared target visual templates from memory.")
                 elif key == ord('c'):
                     # Cycle Controller between FOLLOW_TARGET, PN_GUIDANCE, DIRECT_PURSUIT
                     if active_controller == "FOLLOW_TARGET":

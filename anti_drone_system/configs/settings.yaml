@@ -1,90 +1,103 @@
-# Anti-Drone Vision & Guidance Pipeline Configuration
-
-yolo:
-  model_path: "models/best.pt"
-  confidence_threshold: 0.60
-  nms_threshold: 0.45
-  imgsz: 640
-  device: "cuda"  # "cuda" or "cpu"
-  target_class_ids: [0]  # Standard class for custom drone datasets is usually 0
-  max_detections: 1  # 1 for single target lock mode, higher to track multiple
-  max_box_ratio: 0.20  # Max bounding box area as a ratio of total frame area (e.g. 0.20 for 20%)
-  max_box_width_ratio: 0.45  # Max bounding box width as a ratio of frame width
-  max_box_height_ratio: 0.45 # Max bounding box height as a ratio of frame height
-  train_settings:
-    epochs: 50
-    batch_size: 16
-    workers: 2
-    cache: false
-
-tracker:
-  track_threshold: 0.55  # Threshold for associating high confidence detections
-  match_threshold: 0.8   # Maximum IoU distance for matching
-  track_buffer: 30       # Number of frames to keep a lost track in memory
-  min_box_area: 10       # Minimum bounding box area in pixels
-  lk_max_fallback_frames: 60 # Allow up to 60 frames (~2.0s at 30fps) of pure LK tracking fallback
-
-ranging:
-  focal_length: 800.0    # Camera focal length in pixels
-  drone_real_size: 0.35  # Approximate physical size of the target drone in meters
-  filter_alpha: 0.25     # EMA smoothing factor for distance estimation (0.0 to 1.0)
+camera:
+  buffer_size: 1
+  source: '0'
+  type: usb
 
 guidance:
-  nav_constant: 4.0      # Proportional Navigation gain (N)
-  max_speed_xy: 5.0      # Maximum horizontal velocity command sent to drone (m/s) (Safety limit)
-  max_speed_z: 3.0       # Maximum vertical velocity command sent to drone (m/s) (Safety limit)
-  max_yaw_rate: 0.8      # Maximum yaw rate command (rad/s) (Safety limit)
-  closing_speed: 3.0     # Default closing velocity towards the target (m/s)
-  target_lock_tolerance: 0.08  # Angle offset (radians) considered "aligned" with the target
-  min_distance_intercept: 1.5   # Distance in meters where intercept decelerates to hover
-  deadzone_x: 25.0       # Deadzone in pixels around center X to prevent hunting/oscillations
-  deadzone_y: 20.0       # Deadzone in pixels around center Y to prevent hunting/oscillations
-  los_rate_smoothing: 0.3  # EMA filter alpha for smoothing the Line-Of-Sight rate
-  desired_follow_distance: 5.0 # Desired chase/standoff distance in meters
-  max_forward_speed: 5.0       # Max forward speed for follow mode (m/s)
-  max_climb_rate: 3.0          # Max climb rate for follow mode (m/s)
-  target_loss_timeout: 3.0     # Timeout in seconds to continue prediction and search when target is lost
-  reacquisition_timeout: 5.0  # Timeout in seconds before giving up target search completely
-  rtl_after_timeout: false     # Switch flight controller mode to RTL if target is lost for too long
+  closing_speed: 3.0
+  deadzone_x: 25.0
+  deadzone_y: 20.0
+  desired_follow_distance: 5.0
+  los_rate_smoothing: 0.3
+  max_climb_rate: 3.0
+  max_forward_speed: 5.0
+  max_speed_xy: 5.0
+  max_speed_z: 3.0
+  max_yaw_rate: 0.8
+  min_distance_intercept: 1.5
+  nav_constant: 4.0
+  reacquisition_timeout: 5.0
+  rtl_after_timeout: false
+  target_lock_tolerance: 0.08
+  target_loss_timeout: 3.0
 
-# SpeedyBee FC and MAVLink settings
 mavlink:
-  # Connection type: "serial", "udp", or "tcp"
-  connection_type: "udp"  # Set to "serial" for hardware connection to SpeedyBee
-  
-  # Presets for SpeedyBee F405/F7 serial connection
-  # For Linux (Jetson/Pi): "/dev/ttyACM0" or "/dev/ttyAMA0"
-  # For Windows: "COM3"
-  serial_port: "COM3"
-  baudrate: 921600        # Default ArduPilot/SpeedyBee UART baudrate
-  
-  # Network connection configurations
-  udp_address: "127.0.0.1"
-  udp_port: 14550         # 14550 is default SITL / GCS connection port
-  tcp_address: "127.0.0.1"
-  tcp_port: 5762
-  
-  # Rate limiting and timeouts
-  command_rate_hz: 10.0   # Rate limit for sending movement commands (Hz)
-  heartbeat_rate: 1.0     # How often to send HEARTBEAT message in seconds
-  safety_timeout: 2.0     # Maximum time (seconds) before safety hover trigger
-  reconnect_interval: 3.0 # Wait time (seconds) between reconnection attempts
-  system_id: 255          # System ID of the companion computer/GCS (255 is typical)
-  target_system_id: 1     # System ID of SpeedyBee FC (usually 1)
-  target_component_id: 1  # Component ID of SpeedyBee FC (usually 1)
+  baudrate: 921600
+  command_rate_hz: 10.0
+  connection_type: udp
   enable_msg_logging: false
+  heartbeat_rate: 1.0
+  reconnect_interval: 3.0
+  safety_timeout: 2.0
+  serial_port: COM3
+  system_id: 255
+  target_component_id: 1
+  target_system_id: 1
+  tcp_address: 127.0.0.1
+  tcp_port: 5762
+  udp_address: 127.0.0.1
+  udp_port: 14550
 
-camera:
-  # Camera input type: "usb", "csi", or "rtsp"
-  type: "usb"
-  source: "0"             # Index (e.g. 0) or path to video file or RTSP stream URL
-  buffer_size: 1          # Set to 1 to eliminate frame accumulation lag (highly recommended)
+ranging:
+  drone_real_size: 0.35
+  filter_alpha: 0.25
+  focal_length: 800.0
 
 system:
-  simulation_mode: true   # Set to false to allow actual arming/flight commands to SpeedyBee
-  debug_overlay: true     # If true, draws predicted paths and telemetry detail overlays
-  save_output: false      # Set to true to record the output video
-  output_dir: "outputs"
-  gui: true               # Show the OpenCV visualization window
-  min_fps_warning: 15.0   # Trigger on-screen warning if loop frequency drops below this
-  low_confidence_warning: 0.45 # Trigger warning if detection confidence is below this
+  debug_overlay: true
+  gui: false
+  low_confidence_warning: 0.40
+  min_fps_warning: 15.0
+  mode: webcam
+  output_dir: outputs
+  save_output: false
+  simulation_mode: false
+
+tracker:
+  lk_max_fallback_frames: 15
+  match_threshold: 0.8
+  min_box_area: 50
+  track_buffer: 30
+  track_threshold: 0.45
+
+yolo:
+  # PRIMARY model (models/best.pt) — custom trained drone model.
+  # class 0 = drone in this model. target_class_ids: [0] is CORRECT here.
+  #
+  # FALLBACK model (yolov8n.pt) — COCO pretrained, 80 classes.
+  # class 0 = person in COCO. When falling back, the detector automatically
+  # switches class filter to null and applies shape/aspect filters instead.
+  #
+  confidence_threshold: 0.30
+  device: cuda
+  imgsz: 640
+
+  # Shape filters — applied to ALL detections regardless of model
+  max_box_ratio: 0.50        # reject if box > 50% of frame area
+  max_box_width_ratio: 0.80  # reject overly wide boxes
+  max_box_height_ratio: 0.75 # reject overly tall boxes
+
+  # Aspect ratio — only applied when using the FALLBACK COCO model
+  # Drone: w/h ~ 0.6-2.0  |  Person: w/h ~ 0.25-0.5 (tall & thin)
+  fallback_min_aspect_ratio: 0.55
+  fallback_max_aspect_ratio: 2.50
+  # COCO class IDs to BLOCK in fallback mode (person=0, bird=14, cat=15, dog=16)
+  fallback_blocked_class_ids:
+  - 0
+  - 14
+  - 15
+  - 16
+
+  max_detections: 1
+  model_path: models/best.pt
+  nms_threshold: 0.45
+
+  # Class 0 = drone in your custom trained model — DO NOT CHANGE
+  target_class_ids:
+  - 0
+
+  train_settings:
+    batch_size: 16
+    cache: false
+    epochs: 50
+    workers: 2
