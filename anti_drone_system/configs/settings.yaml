@@ -2,34 +2,32 @@ camera:
   buffer_size: 1
   source: '0'
   type: usb
-
 guidance:
-  closing_speed: 3.0
-  deadzone_x: 25.0
-  deadzone_y: 20.0
-  desired_follow_distance: 5.0
+  closing_speed: 3
+  deadzone_x: 25
+  deadzone_y: 20
+  desired_follow_distance: 5
   los_rate_smoothing: 0.3
-  max_climb_rate: 3.0
-  max_forward_speed: 5.0
-  max_speed_xy: 5.0
-  max_speed_z: 3.0
+  max_climb_rate: 3
+  max_forward_speed: 5
+  max_speed_xy: 5
+  max_speed_z: 3
   max_yaw_rate: 0.8
   min_distance_intercept: 1.5
-  nav_constant: 4.0
-  reacquisition_timeout: 5.0
+  nav_constant: 4
+  reacquisition_timeout: 5
   rtl_after_timeout: false
   target_lock_tolerance: 0.08
-  target_loss_timeout: 3.0
-
+  target_loss_timeout: 3
 mavlink:
-  connection_type: serial
-  serial_port: COM9        # update to your actual COM port
-  baudrate: 115200
-  command_rate_hz: 10.0
+  baudrate: 57600
+  command_rate_hz: 10
+  connection_type: udp
   enable_msg_logging: false
-  heartbeat_rate: 1.0
-  reconnect_interval: 3.0
-  safety_timeout: 2.0
+  heartbeat_rate: 1
+  reconnect_interval: 3
+  safety_timeout: 2
+  serial_port: COM9
   system_id: 255
   target_component_id: 1
   target_system_id: 1
@@ -37,65 +35,44 @@ mavlink:
   tcp_port: 5762
   udp_address: 127.0.0.1
   udp_port: 14550
-
 ranging:
   drone_real_size: 0.35
   filter_alpha: 0.25
-  focal_length: 800.0
-
+  focal_length: 800
 system:
   debug_overlay: true
   gui: false
-  low_confidence_warning: 0.40
-  min_fps_warning: 15.0
+  low_confidence_warning: 0.4
+  min_fps_warning: 15
   mode: webcam
   output_dir: outputs
   save_output: false
   simulation_mode: false
-
 tracker:
   lk_max_fallback_frames: 15
   match_threshold: 0.8
   min_box_area: 50
   track_buffer: 30
   track_threshold: 0.45
-
 yolo:
-  # PRIMARY model (models/best.pt) — custom trained drone model.
-  # class 0 = drone in this model. target_class_ids: [0] is CORRECT here.
-  #
-  # FALLBACK model (yolov8n.pt) — COCO pretrained, 80 classes.
-  # class 0 = person in COCO. When falling back, the detector automatically
-  # switches class filter to null and applies shape/aspect filters instead.
-  #
-  confidence_threshold: 0.30
-  device: cpu   # change to 'cuda' if your machine has an NVIDIA GPU
-  imgsz: 640
-
-  # Shape filters — applied to ALL detections regardless of model
-  max_box_ratio: 0.50        # reject if box > 50% of frame area
-  max_box_width_ratio: 0.80  # reject overly wide boxes
-  max_box_height_ratio: 0.75 # reject overly tall boxes
-
-  # Aspect ratio — only applied when using the FALLBACK COCO model
-  # Drone: w/h ~ 0.6-2.0  |  Person: w/h ~ 0.25-0.5 (tall & thin)
-  fallback_min_aspect_ratio: 0.55
-  fallback_max_aspect_ratio: 2.50
-  # COCO class IDs to BLOCK in fallback mode (person=0, bird=14, cat=15, dog=16)
+  confidence_threshold: 0.3
+  device: cuda
   fallback_blocked_class_ids:
   - 0
   - 14
   - 15
   - 16
-
+  fallback_max_aspect_ratio: 2.5
+  fallback_min_aspect_ratio: 0.55
+  imgsz: 640
+  max_box_height_ratio: 0.75
+  max_box_ratio: 0.5
+  max_box_width_ratio: 0.8
   max_detections: 1
   model_path: models/best.pt
   nms_threshold: 0.45
-
-  # Class 0 = drone in your custom trained model — DO NOT CHANGE
   target_class_ids:
   - 0
-
   train_settings:
     batch_size: 16
     cache: false

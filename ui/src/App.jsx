@@ -37,7 +37,9 @@ function App() {
     fps: 0.0,
     warnings: [],
     telemetry: {},
-    current_cmd: { vx: 0.0, vy: 0.0, vz: 0.0, yaw_rate: 0.0 }
+    current_cmd: { vx: 0.0, vy: 0.0, vz: 0.0, yaw_rate: 0.0 },
+    system_mode: 'simulation',
+    camera_source: '0'
   });
   
   // Connection states
@@ -54,6 +56,26 @@ function App() {
   const [taskStatus, setTaskStatus] = useState('idle'); // idle, running, completed, error
   const socketRef = useRef(null);
   const terminalEndRef = useRef(null);
+
+  // Available cameras for webcam mode
+  const [availableCameras, setAvailableCameras] = useState([]);
+
+  // Fetch available cameras
+  useEffect(() => {
+    const getCameras = async () => {
+      try {
+        await navigator.mediaDevices.getUserMedia({ video: true }); // Request permission to get labels
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(device => device.kind === 'videoinput');
+        setAvailableCameras(videoDevices);
+      } catch (err) {
+        console.error("Error fetching cameras:", err);
+      }
+    };
+    if (activeTab === 'settings' || status.system_mode === 'webcam') {
+      getCameras();
+    }
+  }, [activeTab, status.system_mode]);
 
   // Poll status from FastAPI backend
   useEffect(() => {
@@ -312,6 +334,37 @@ function App() {
               >
                 Webcam
               </button>
+              {status.system_mode === 'webcam' && availableCameras.length > 0 && (
+                <select
+                  value={status.camera_source || "0"}
+                  onChange={async (e) => {
+                    const newSource = e.target.value;
+                    try {
+                      const res = await fetch('http://127.0.0.1:8000/api/config');
+                      const currentConfig = await res.json();
+                      currentConfig.camera.source = newSource;
+                      await fetch('http://127.0.0.1:8000/api/config', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(currentConfig)
+                      });
+                      await fetch('http://127.0.0.1:8000/api/pipeline/restart', { method: 'POST' });
+                    } catch(err) { console.error('Failed to change camera:', err); }
+                  }}
+                  style={{
+                    background: 'none', border: 'none', color: 'var(--primary)', 
+                    fontSize: '0.7rem', fontWeight: 600, outline: 'none', cursor: 'pointer', 
+                    maxWidth: '120px', marginLeft: '2px', marginRight: '4px'
+                  }}
+                  title="Select Camera"
+                >
+                  {availableCameras.map((cam, idx) => (
+                    <option key={cam.deviceId || idx} value={idx.toString()} style={{ background: '#111827', color: '#fff' }}>
+                      {cam.label || `Camera ${idx}`}
+                    </option>
+                  ))}
+                </select>
+              )}
               <button
                 onClick={() => triggerModeSelect('hardware')}
                 style={{
@@ -440,17 +493,6 @@ function App() {
                         <input
                           type="checkbox"
                           className="switch-input"
-                          checked={status.follow_target_enabled}
-                          onChange={() => triggerToggle('follow')}
-                        />
-                        <span className="switch-slider"></span>
-                        Active Follow
-                      </label>
-
-                      <label className="switch-label">
-                        <input
-                          type="checkbox"
-                          className="switch-input"
                           checked={status.paused}
                           onChange={() => triggerToggle('pause')}
                         />
@@ -459,17 +501,68 @@ function App() {
                       </label>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)' }}>LAW:</span>
-                      <select
-                        className="hud-select"
-                        value={status.active_controller}
-                        onChange={(e) => triggerControllerSelect(e.target.value)}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <button
+                        className="btn"
+                        style={{
+                          background: status.active_controller === 'FOLLOW' && status.follow_target_enabled ? 'var(--primary)' : 'rgba(59, 130, 246, 0.1)',
+                          color: status.active_controller === 'FOLLOW' && status.follow_target_enabled ? '#000' : 'var(--primary)',
+                          border: '1px solid var(--primary)',
+                          padding: '6px 16px',
+                          fontSize: '0.8rem',
+                          fontWeight: 700,
+                          cursor: 'pointer'
+                        }}
+                        onClick={async () => {
+                          const isCurrentlyActive = status.active_controller === 'FOLLOW' && status.follow_target_enabled;
+                          if (isCurrentlyActive) {
+                            await fetch('http://127.0.0.1:8000/api/control/set_follow', {
+                              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false })
+                            });
+                          } else {
+                            await fetch('http://127.0.0.1:8000/api/control/controller', {
+                              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ controller: 'FOLLOW' })
+                            });
+                            await fetch('http://127.0.0.1:8000/api/control/set_follow', {
+                              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true })
+                            });
+                          }
+                        }}
                       >
-                        <option value="FOLLOW_TARGET">Follow Target</option>
-                        <option value="PN_GUIDANCE">Proportional Navigation (PN)</option>
-                        <option value="DIRECT_PURSUIT">Direct Pursuit</option>
-                      </select>
+                        <Navigation style={{ width: '14px', display: 'inline', marginRight: '6px', verticalAlign: 'middle' }} />
+                        FOLLOW
+                      </button>
+
+                      <button
+                        className="btn"
+                        style={{
+                          background: status.active_controller === 'DESTROY' && status.follow_target_enabled ? 'var(--danger)' : 'rgba(239, 68, 68, 0.1)',
+                          color: status.active_controller === 'DESTROY' && status.follow_target_enabled ? '#000' : 'var(--danger)',
+                          border: '1px solid var(--danger)',
+                          padding: '6px 16px',
+                          fontSize: '0.8rem',
+                          fontWeight: 700,
+                          cursor: 'pointer'
+                        }}
+                        onClick={async () => {
+                          const isCurrentlyActive = status.active_controller === 'DESTROY' && status.follow_target_enabled;
+                          if (isCurrentlyActive) {
+                            await fetch('http://127.0.0.1:8000/api/control/set_follow', {
+                              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false })
+                            });
+                          } else {
+                            await fetch('http://127.0.0.1:8000/api/control/controller', {
+                              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ controller: 'DESTROY' })
+                            });
+                            await fetch('http://127.0.0.1:8000/api/control/set_follow', {
+                              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true })
+                            });
+                          }
+                        }}
+                      >
+                        <Crosshair style={{ width: '14px', display: 'inline', marginRight: '6px', verticalAlign: 'middle' }} />
+                        DESTROY
+                      </button>
                     </div>
                   </div>
                 )}
@@ -500,7 +593,7 @@ function App() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   <span style={{ fontSize: '0.65rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.5px' }}>Control Law</span>
                   <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--primary)' }}>
-                    {status.active_controller === 'PN_GUIDANCE' ? 'Prop. Nav.' : status.active_controller === 'DIRECT_PURSUIT' ? 'Direct Pursuit' : 'Follow Target'}
+                    {status.active_controller === 'DESTROY' || status.active_controller === 'PN_GUIDANCE' ? 'Prop. Nav.' : status.active_controller === 'FOLLOW' ? 'Hybrid Follow' : status.active_controller === 'DIRECT_PURSUIT' ? 'Direct Pursuit' : 'Follow Target'}
                   </span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -540,10 +633,18 @@ function App() {
               </div>
               <div className="control-deck">
                 <div className="button-grid">
-                  <button className="btn success" onClick={() => triggerControlAction('arm')}>
+                  <button 
+                    className="btn" 
+                    style={{ background: status.telemetry.is_armed ? 'var(--success)' : 'rgba(16, 185, 129, 0.2)', color: status.telemetry.is_armed ? '#000' : 'var(--success)', border: '1px solid var(--success)' }}
+                    onClick={() => triggerControlAction('arm')}
+                  >
                     ARM VEHICLE
                   </button>
-                  <button className="btn danger" onClick={() => triggerControlAction('disarm')}>
+                  <button 
+                    className="btn" 
+                    style={{ background: !status.telemetry.is_armed ? 'var(--danger)' : 'rgba(239, 68, 68, 0.2)', color: !status.telemetry.is_armed ? '#000' : 'var(--danger)', border: '1px solid var(--danger)' }}
+                    onClick={() => triggerControlAction('disarm')}
+                  >
                     DISARM VEHICLE
                   </button>
                 </div>
@@ -810,13 +911,28 @@ function App() {
                   <label>Link Type</label>
                   <select
                     className="form-input"
-                    value={config.mavlink.connection_type}
-                    onChange={(e) => handleConfigChange('mavlink', 'connection_type', e.target.value)}
+                    value={config.mavlink.connection_type === 'udp' ? 'wireless' : 'wired'}
+                    onChange={(e) => {
+                      if (e.target.value === 'wired') {
+                        handleConfigChange('mavlink', 'connection_type', 'serial');
+                      } else {
+                        handleConfigChange('mavlink', 'connection_type', 'udp');
+                        handleConfigChange('mavlink', 'baudrate', 115200);
+                      }
+                    }}
                   >
-                    <option value="serial">Serial Port (Hardware Connection)</option>
-                    <option value="udp">UDP Socket (SITL Simulator)</option>
-                    <option value="tcp">TCP Socket</option>
+                    <option value="wired">Wired (USB / Serial)</option>
+                    <option value="wireless">Wireless (UDP / WiFi)</option>
                   </select>
+                </div>
+                <div className="form-group">
+                  <label>MAVLink Baudrate</label>
+                  <input
+                    type="number"
+                    className="form-input"
+                    value={config.mavlink.baudrate || 115200}
+                    onChange={(e) => handleConfigChange('mavlink', 'baudrate', e.target.value)}
+                  />
                 </div>
                 <div className="form-group">
                   <label>Serial COM Port / Dev</label>
@@ -865,12 +981,36 @@ function App() {
                 </div>
                 <div className="form-group">
                   <label>Camera Index / RTSP URL / File path</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    value={config.camera.source}
-                    onChange={(e) => handleConfigChange('camera', 'source', e.target.value)}
-                  />
+                  {config.system.mode === 'webcam' ? (
+                    <select
+                      className="form-input"
+                      value={config.camera.source}
+                      onChange={(e) => handleConfigChange('camera', 'source', e.target.value)}
+                    >
+                      {availableCameras.map((camera, index) => (
+                        <option key={camera.deviceId} value={index.toString()}>
+                          {camera.label || `Camera ${index}`}
+                        </option>
+                      ))}
+                      <option value="custom">Custom URL / File</option>
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={config.camera.source}
+                      onChange={(e) => handleConfigChange('camera', 'source', e.target.value)}
+                    />
+                  )}
+                  {config.system.mode === 'webcam' && config.camera.source === 'custom' && (
+                    <input
+                      type="text"
+                      className="form-input"
+                      style={{ marginTop: '10px' }}
+                      placeholder="Enter Custom Index or URL"
+                      onChange={(e) => handleConfigChange('camera', 'source', e.target.value)}
+                    />
+                  )}
                 </div>
               </div>
 

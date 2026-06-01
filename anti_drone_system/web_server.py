@@ -180,6 +180,7 @@ class PipelineManager:
 
         # Initialize MAVLink Connection
         mavlink_mgr = MAVLinkConnectionManager(config)
+        self.mavlink_mgr = mavlink_mgr
         mavlink_mgr.connect()
 
         # Initialize core elements
@@ -499,10 +500,21 @@ class PipelineManager:
                     if pred_pos_3d is not None:
                         predicted_px = predictor.project_to_image(pred_pos_3d, img_w, img_h)
                     
-                    if self.active_controller == "PN_GUIDANCE":
+                    if self.active_controller == "PN_GUIDANCE" or self.active_controller == "DESTROY":
                         cmd = controller_pn.compute_commands(
                             target_track, self.target_distance, smoothed_pos, smoothed_vel, img_w, img_h, dt
                         )
+                    elif self.active_controller == "FOLLOW":
+                        desired_dist = config['guidance'].get('desired_follow_distance', 5.0)
+                        # Hybrid Logic: if far away, close distance fast with Pursuit, otherwise Station-Keep
+                        if self.target_distance > desired_dist * 2.0:
+                            cmd = controller_pursuit.compute_commands(
+                                target_track, self.target_distance, img_w, img_h
+                            )
+                        else:
+                            cmd = controller_follow.compute_commands(
+                                target_track, self.target_distance, smoothed_pos, smoothed_vel, img_w, img_h, dt
+                            )
                     elif self.active_controller == "FOLLOW_TARGET":
                         cmd = controller_follow.compute_commands(
                             target_track, self.target_distance, smoothed_pos, smoothed_vel, img_w, img_h, dt
@@ -629,7 +641,8 @@ def get_status():
         "warnings": pipeline_manager.warnings_list,
         "telemetry": pipeline_manager.telemetry,
         "current_cmd": pipeline_manager.current_cmd,
-        "system_mode": pipeline_manager.config.get('system', {}).get('mode', 'simulation')
+        "system_mode": pipeline_manager.config.get('system', {}).get('mode', 'simulation'),
+        "camera_source": str(pipeline_manager.config.get('camera', {}).get('source', '0'))
     }
 
 
@@ -736,6 +749,11 @@ class PipelineManager(PipelineManager):
         elif action == "rtl":
             res = self.mavlink_mgr.set_mode("RTL")
             return res, "Returning to Launch" if res else "RTL command failed"
+        elif action == "emergency_stop":
+            self.guidance_active = False
+            self.follow_target_enabled = False
+            self.mavlink_mgr.send_velocity_command(0.0, 0.0, 0.0, 0.0)
+            return True, "Emergency Stop Activated. Hovering."
         return False, "Unknown action"
 
 
@@ -766,14 +784,22 @@ def api_toggle(target: str):
 
 
 class ControllerCommand(BaseModel):
-    controller: str # FOLLOW_TARGET, PN_GUIDANCE, DIRECT_PURSUIT
+    controller: str
 
 @app.post("/api/control/controller")
 def api_set_controller(cmd: ControllerCommand):
-    if cmd.controller in ["FOLLOW_TARGET", "PN_GUIDANCE", "DIRECT_PURSUIT"]:
+    if cmd.controller in ["FOLLOW_TARGET", "PN_GUIDANCE", "DIRECT_PURSUIT", "FOLLOW", "DESTROY"]:
         pipeline_manager.active_controller = cmd.controller
         return {"status": "success", "controller": pipeline_manager.active_controller}
     raise HTTPException(status_code=400, detail="Invalid controller type")
+
+class SetFollowRequest(BaseModel):
+    enabled: bool
+
+@app.post("/api/control/set_follow")
+def api_set_follow(req: SetFollowRequest):
+    pipeline_manager.follow_target_enabled = req.enabled
+    return {"status": "success", "value": pipeline_manager.follow_target_enabled}
 
 
 # Configuration endpoint
