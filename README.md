@@ -134,43 +134,39 @@ System settings are centralized in [settings.yaml](file:///d:/Bytetrack/anti_dro
 
 ## 🚀 How to Run the Pipeline
 
-The primary script is `main.py` located under `anti_drone_system`. 
+The system is now driven by a fast, asynchronous FastAPI backend and a beautiful React dashboard for real-time telemetry and control.
 
-### 1. Run in Virtual Simulation Mode (Offline SITL)
-Test the detection, tracking, prediction, and guidance pipeline with a simulated virtual target drone:
+### 1. Start the Backend Server
+Run the FastAPI backend which manages the tracking pipeline, YOLO inference, and MAVLink connection:
 ```bash
-python anti_drone_system/main.py --mode simulation
+# From the root ByteTracker-PN-control-Custom_Datasets directory
+python anti_drone_system/web_server.py
 ```
+*Note: The backend automatically reads from your `settings.yaml` configuration to determine the operating mode (simulation, webcam, or hardware) and camera sources.*
 
-### 2. Run with Webcam Input
-Run the detection pipeline using your local webcam index:
+### 2. Start the React Dashboard
+In a new terminal window, start the interactive web UI:
 ```bash
-python anti_drone_system/main.py --mode webcam --source 0
+cd ui
+npm install
+npm run dev
 ```
-
-### 3. Run in Hardware Deployment (Jetson/Companion computer connected to SpeedyBee FC)
-Run on live analog FPV video input and transmit real guidance controls to ArduPilot via MAVLink:
-```bash
-python anti_drone_system/main.py --mode hardware --source "/dev/video0"
-```
+Navigate to `http://localhost:5173` in your web browser to access the ORCUS Dashboard.
 
 ---
 
-## 🎮 Live Control Hotkeys (OpenCV Feed Window)
+## 🎮 React Interactive Dashboard
 
-When running the GUI overlay feed window, you can control the system state interactively:
+The system features a complete **React-based Web UI** replacing the old OpenCV debug window. The dashboard provides full control over the autonomous drone, real-time hardware telemetry, and dynamic configuration.
 
-| Key | Action |
-|:---:|:---|
-| **`q`** | Quit the program safely (sends hover commands before disconnecting MAVLink) |
-| **`p`** | Pause the video stream pipeline execution |
-| **`t`** | **Toggle Autonomous Guidance** (Enable/Disable sending pursuit commands) |
-| **`c`** | Cycle Guidance Control Law (**Proportional Navigation** $\Leftrightarrow$ **Direct Pursuit**) |
-| **`d`** | Toggle Debug Overlay (visualizes velocity vectors, predictions, and stats) |
-| **`a`** / **`s`** | Send **ARM** / **DISARM** commands to the flight controller |
-| **`o`** | Send **TAKEOFF** command (drone climbs to a default altitude of 3 meters) |
-| **`l`** / **`r`** | Trigger **LAND** / **Return-To-Launch (RTL)** modes |
-| **`e`** | **EMERGENCY STOP** (instantly halts auto-guidance and commands hover) |
+### Dashboard Features:
+*   **Live Telemetry & Identity**: Displays real-time flight telemetry (battery voltage, altitude, speed) and extracts unique device metadata (System ID, Autopilot type) directly from MAVLink heartbeats.
+*   **Dynamic Camera Selection**: Seamlessly enumerate and select external video capture devices (e.g., Analog UVC video receivers for wireless FPV feeds) on the fly via the browser's `MediaDevices` API.
+*   **One-Click Engagement**: 
+    *   🔵 **[ FOLLOW ]**: Engages Hybrid Follow logic. Dynamically uses Direct Pursuit to aggressively close the gap, then smoothly transitions to station-keeping at your desired standoff distance.
+    *   🔴 **[ DESTROY ]**: Immediately locks in Proportional Navigation (PN) logic to calculate an intercept trajectory for a direct collision course.
+*   **Flight Controls**: Dedicated solid-state buttons for ARM, DISARM, TAKEOFF, and an **EMERGENCY STOP** that instantly halts autonomous guidance.
+*   **Wireless Field Deployment**: Configured to support remote operation over wireless telemetry links (radio modules at 57600 baud) for true field deployment alongside analog UVC video receivers.
 
 ---
 
